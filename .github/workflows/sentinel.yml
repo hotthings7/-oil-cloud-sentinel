@@ -2,24 +2,21 @@ name: Oil Sentinel
 
 on:
   schedule:
-    - cron: '* * * * *'
+    - cron: '* * * * *'   # every minute
   workflow_dispatch:
 
 jobs:
   run:
     runs-on: ubuntu-latest
+    concurrency:
+      group: oil-sentinel
+      cancel-in-progress: false
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
+      - run: pip install -r requirements.txt
       - name: Run Sentinel
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
