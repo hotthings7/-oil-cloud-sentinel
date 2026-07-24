@@ -20,7 +20,7 @@ db = firestore.client()
 TWITTER_API_URL = "https://api.twitter.com/2/tweets/search/recent"
 TWITTER_QUERY = "(oil OR crude OR wti OR brent OR OPEC OR petroleum) lang:en -is:retweet"
 TWITTER_MAX_RESULTS = 10
-TWITTER_SEARCH_WINDOW_MIN = 60   # tweets from last 60 minutes
+TWITTER_WINDOW_MIN = 60
 
 HF_MODEL_URL = "https://api-inference.huggingface.co/models/cardiffnlp/twitter-roberta-base-sentiment-latest"
 
@@ -28,18 +28,49 @@ RSS_FEEDS = [
     'https://oilprice.com/rss/main',
     'https://oilprice.com/rss/energy',
     'https://news.google.com/rss/search?q=crude+oil+OR+OPEC+OR+oil+price&hl=en-US&gl=US&ceid=US:en',
-    'https://www.investing.com/rss/news_301.rss',        # Investing.com oil news
-    'https://www.investing.com/rss/news_25.rss',          # Commodities
-    'https://www.fxstreet.com/feeds/news/radar/energy',   # FXStreet energy
-    'https://www.reutersagency.com/feed/?taxonomy=best-sectors&post_type=best-sectors-energy',  # Reuters energy
+    'https://www.investing.com/rss/news_301.rss',
+    'https://www.investing.com/rss/news_25.rss',
+    'https://www.fxstreet.com/feeds/news/radar/energy',
+    'https://www.reutersagency.com/feed/?taxonomy=best-sectors&post_type=best-sectors-energy',
 ]
 
-OIL_KEYWORDS = [... same as before ...]   # keep existing
-WINDOW_MINUTES = 360   # 6 hours – catch everything that might have been missed
+OIL_KEYWORDS = [
+    'crude', 'oil', 'wti', 'brent', 'opec', 'petroleum', 'eia', 'energy',
+    'gasoline', 'distillate', 'barrel', 'rig count', 'shale', 'pipeline',
+    'refinery', 'sanctions', 'geopolitical', 'supply', 'demand',
+    'inventory', 'stockpile', 'production cut', 'output cut'
+]
+
+WINDOW_MINUTES = 360
 HEARTBEAT_HOURS = 6
 
-BULLISH_PATTERNS = [... same ...]
-BEARISH_PATTERNS = [... same ...]
+BULLISH_PATTERNS = [
+    r'supply disruption', r'output cut', r'production cut',
+    r'opec\s*\+?\s*cut', r'extends cuts', r'voluntary cuts',
+    r'geopolitical tension', r'sanctions on (iran|venezuela|russia)',
+    r'hurricane\s+\w+\s+shuts', r'pipeline outage', r'force majeure',
+    r'demand surge', r'recovery in demand', r'economic stimulus',
+    r'china\s+(oil\s+)?imports?\s+(surge|rise|record)',
+    r'eia.*crude.*draw', r'inventories.*draw', r'stockpile.*decline',
+    r'(oil|crude|wti|brent)\s*(prices?\s*)?(surge|jump|spike|rally|soar|explode|rocket|skyrocket|climb|gain|rise|advance)',
+    r'(bullish|upward)\s+(for|on)\s+(oil|crude)',
+    r'oil\s+(hits|breaks)\s+(new\s+)?(high|record)',
+    r'oil\s+prices?\s+(rebound|recover)',
+]
+
+BEARISH_PATTERNS = [
+    r'increase\s+production', r'ramp\s+up\s+output', r'easing\s+cuts',
+    r'opec\s*\+?\s*raise', r'opec\s*\+?\s*boost',
+    r'demand destruction', r'recession fears', r'economy slows',
+    r'crude build', r'inventories rise', r'stockpiles surge',
+    r'eia.*crude.*build', r'inventories.*build',
+    r'interest rate hike', r'fed tapering', r'stronger dollar',
+    r'alternative energy surge', r'electric vehicle adoption',
+    r'(oil|crude|wti|brent)\s*(prices?\s*)?(fall|drop|plunge|tumble|sink|slide|decline|slip|dip|crash|collapse)',
+    r'(bearish|downward)\s+(for|on)\s+(oil|crude)',
+    r'oil\s+(hits|falls\s+to)\s+(new\s+)?(low|multi-year low)',
+    r'oil\s+prices?\s+(extend\s+losses|weaken)',
+]
 
 vader = SentimentIntensityAnalyzer()
 
@@ -67,7 +98,7 @@ def cleanup_old():
     for doc in old_docs:
         doc.reference.delete()
 
-# ---------- TWITTER SEARCH ----------
+# ---------- TWITTER ----------
 def fetch_twitter():
     items = []
     now = datetime.now(timezone.utc)
@@ -79,25 +110,23 @@ def fetch_twitter():
         'query': TWITTER_QUERY,
         'max_results': TWITTER_MAX_RESULTS,
         'tweet.fields': 'created_at',
-        'start_time': (now - timedelta(minutes=TWITTER_SEARCH_WINDOW_MIN)).isoformat(),
-        'expansions': 'author_id'
+        'start_time': (now - timedelta(minutes=TWITTER_WINDOW_MIN)).isoformat(),
     }
     url = f"{TWITTER_API_URL}?{urllib.parse.urlencode(params)}"
     req = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             data = json.loads(resp.read())
-        print(f"Twitter search returned: {data.get('meta', {}).get('result_count', 0)} tweets")
+        print(f"Twitter results: {data.get('meta', {}).get('result_count', 0)} tweets")
         if 'data' not in data:
             return items
         for tweet in data['data']:
             text = tweet.get('text', '')
             tweet_id = tweet.get('id', '')
             created_at = tweet.get('created_at')
-            # Convert created_at to datetime
             pub_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00')) if created_at else now
             delta = (now - pub_dt).total_seconds() / 60
-            if delta > TWITTER_SEARCH_WINDOW_MIN:
+            if delta > TWITTER_WINDOW_MIN:
                 continue
             if not is_oil_related(text):
                 continue
@@ -110,7 +139,7 @@ def fetch_twitter():
             print(f"  Tweet accepted: {text[:80]}...")
             items.append(item)
     except Exception as e:
-        print(f"Twitter API error: {e}")
+        print(f"Twitter error: {e}")
     return items
 
 # ---------- RSS ----------
@@ -152,7 +181,6 @@ def fetch_rss():
 
 # ---------- SENTIMENT ----------
 def get_sentiment(text):
-    # try HF first, fallback to VADER
     payload = json.dumps({"inputs": text[:3000]}).encode('utf-8')
     headers = {'Authorization': f'Bearer {HF_TOKEN}', 'Content-Type': 'application/json'}
     try:
@@ -212,7 +240,7 @@ def maybe_send_heartbeat():
         last = doc.to_dict().get('timestamp')
         if last and (now - datetime.fromisoformat(last)) < timedelta(hours=HEARTBEAT_HOURS):
             return
-    send_telegram(f"💓 Heartbeat — alive, scanning every 5 min. Next in {HEARTBEAT_HOURS}h.")
+    send_telegram(f"💓 Heartbeat — alive, every 5 min. Next in {HEARTBEAT_HOURS}h.")
     doc_ref.set({'timestamp': now.isoformat()})
 
 # ---------- MAIN ----------
