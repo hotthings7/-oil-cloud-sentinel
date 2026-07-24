@@ -16,39 +16,60 @@ db = firestore.client()
 
 # ---------- CONFIG ----------
 HF_MODEL_URL = "https://api-inference.huggingface.co/models/cardiffnlp/twitter-roberta-base-sentiment-latest"
-
-# Feeds with User-Agent header
 FEED_HEADERS = {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
 }
 
 RSS_FEEDS = [
-    ('https://oilprice.com/rss/main', None),  # already working
-    ('https://oilprice.com/rss/energy', None), # broader energy
-    ('https://news.google.com/rss/search?q=crude+oil+OR+OPEC+OR+oil+price&hl=en-US&gl=US&ceid=US:en', None),
-    # Reuters energy news (direct feed still works with user-agent)
-    ('https://www.reuters.com/arc/outboundfeeds/v3/all/?outputType=xml&category=energy', None),
-    # MarketWatch oil
-    ('https://feeds.marketwatch.com/marketwatch/topics/subject/oil-markets', None),
-    # Nitter search – multiple fallback instances
-    ('https://nitter.net/search/rss?f=tweets&q=crude+oil+OR+OPEC+OR+oil+price&since=1h', None),
-    ('https://nitter.unixfox.eu/search/rss?f=tweets&q=crude+oil+OR+OPEC+OR+oil+price&since=1h', None),
-    ('https://nitter.1d4.us/search/rss?f=tweets&q=crude+oil+OR+OPEC+OR+oil+price&since=1h', None),
+    'https://oilprice.com/rss/main',
+    'https://oilprice.com/rss/energy',
+    'https://news.google.com/rss/search?q=crude+oil+OR+OPEC+OR+oil+price&hl=en-US&gl=US&ceid=US:en',
+    'https://www.reuters.com/arc/outboundfeeds/v3/all/?outputType=xml&category=energy',
+    'https://feeds.marketwatch.com/marketwatch/topics/subject/oil-markets',
+    'https://nitter.net/search/rss?f=tweets&q=crude+oil+OR+OPEC+OR+oil+price&since=1h',
+    'https://nitter.unixfox.eu/search/rss?f=tweets&q=crude+oil+OR+OPEC+OR+oil+price&since=1h',
+    'https://nitter.1d4.us/search/rss?f=tweets&q=crude+oil+OR+OPEC+OR+oil+price&since=1h',
 ]
 
-OIL_KEYWORDS = [... same as before ...]  # I'll keep them unchanged but you can copy from last version
+OIL_KEYWORDS = [
+    'crude', 'oil', 'wti', 'brent', 'opec', 'petroleum', 'eia', 'energy',
+    'gasoline', 'distillate', 'barrel', 'rig count', 'shale', 'pipeline',
+    'refinery', 'sanctions', 'geopolitical', 'supply', 'demand',
+    'inventory', 'stockpile', 'production cut', 'output cut'
+]
 
 WINDOW_MINUTES = 240
 HEARTBEAT_HOURS = 6
 
-# Rule patterns unchanged ... (copy from previous code)
+BULLISH_PATTERNS = [
+    r'supply disruption', r'output cut', r'production cut',
+    r'opec\s*\+?\s*cut', r'extends cuts', r'voluntary cuts',
+    r'geopolitical tension', r'sanctions on (iran|venezuela|russia)',
+    r'hurricane\s+\w+\s+shuts', r'pipeline outage', r'force majeure',
+    r'demand surge', r'recovery in demand', r'economic stimulus',
+    r'china\s+(oil\s+)?imports?\s+(surge|rise|record)',
+    r'eia.*crude.*draw', r'inventories.*draw', r'stockpile.*decline',
+    r'(oil|crude|wti|brent)\s*(prices?\s*)?(surge|jump|spike|rally|soar|explode|rocket|skyrocket|climb|gain|rise|advance)',
+    r'(bullish|upward)\s+(for|on)\s+(oil|crude)',
+    r'oil\s+(hits|breaks)\s+(new\s+)?(high|record)',
+    r'oil\s+prices?\s+(rebound|recover)',
+]
 
-# VADER analyzer (local, no internet)
+BEARISH_PATTERNS = [
+    r'increase\s+production', r'ramp\s+up\s+output', r'easing\s+cuts',
+    r'opec\s*\+?\s*raise', r'opec\s*\+?\s*boost',
+    r'demand destruction', r'recession fears', r'economy slows',
+    r'crude build', r'inventories rise', r'stockpiles surge',
+    r'eia.*crude.*build', r'inventories.*build',
+    r'interest rate hike', r'fed tapering', r'stronger dollar',
+    r'alternative energy surge', r'electric vehicle adoption',
+    r'(oil|crude|wti|brent)\s*(prices?\s*)?(fall|drop|plunge|tumble|sink|slide|decline|slip|dip|crash|collapse)',
+    r'(bearish|downward)\s+(for|on)\s+(oil|crude)',
+    r'oil\s+(hits|falls\s+to)\s+(new\s+)?(low|multi-year low)',
+    r'oil\s+prices?\s+(extend\s+losses|weaken)',
+]
+
 vader = SentimentIntensityAnalyzer()
-
-# Fallback sentiment words (last resort)
-NEGATIVE_WORDS = ['fall', 'drop', 'decline', 'plunge', 'tumble', 'sink', 'slide', 'loss', 'bearish', 'sell-off', 'crash', 'weak']
-POSITIVE_WORDS = ['rise', 'gain', 'surge', 'jump', 'rally', 'spike', 'soar', 'climb', 'bullish', 'rebound', 'strong', 'record high']
 
 # ---------- HELPERS ----------
 def is_oil_related(text):
@@ -78,20 +99,9 @@ def cleanup_old():
 def fetch_rss():
     items = []
     now = datetime.now(timezone.utc)
-    for url, extra_headers in RSS_FEEDS:
+    for url in RSS_FEEDS:
         print(f"Fetching {url}")
         try:
-            # feedparser can accept extra headers via the 'agent' parameter? Not directly.
-            # We'll use urllib to add User-Agent globally for feedparser.
-            # Custom opener
-            opener = urllib.request.build_opener()
-            opener.addheaders = [('User-Agent', FEED_HEADERS['User-Agent'])]
-            # feedparser can take a 'handlers' or we can pass the response object.
-            # Simpler: set global default for urllib
-            # Actually, we'll set the User-Agent for feedparser via its USER_AGENT setting.
-            if not hasattr(feedparser, 'USER_AGENT'):
-                feedparser.USER_AGENT = FEED_HEADERS['User-Agent']
-            # Use feedparser.parse with custom agent
             feed = feedparser.parse(url, agent=FEED_HEADERS['User-Agent'])
             print(f"  Feed entries: {len(feed.entries)}")
             for entry in feed.entries[:10]:
@@ -127,9 +137,8 @@ def fetch_rss():
             print(f"  ERROR fetching {url}: {e}")
     return items
 
-# ---------- SENTIMENT (3‑tier: HF → VADER → keyword) ----------
+# ---------- SENTIMENT ----------
 def hf_sentiment(text):
-    """Try Hugging Face; if fails, use VADER."""
     payload = json.dumps({"inputs": text[:3000]}).encode('utf-8')
     headers = {
         'Authorization': f'Bearer {HF_TOKEN}',
@@ -148,11 +157,9 @@ def hf_sentiment(text):
             else: return 'NEU'
     except Exception as e:
         print(f"HF error: {e}")
-    # Fallback to VADER
     return vader_sentiment(text)
 
 def vader_sentiment(text):
-    """VADER rule-based sentiment (offline)."""
     score = vader.polarity_scores(text)
     if score['compound'] >= 0.05:
         return 'POS'
@@ -161,21 +168,8 @@ def vader_sentiment(text):
     else:
         return 'NEU'
 
-def keyword_sentiment(text):
-    """Last resort if VADER somehow fails (not needed but keep)."""
-    t = text.lower()
-    neg = sum(1 for w in NEGATIVE_WORDS if w in t)
-    pos = sum(1 for w in POSITIVE_WORDS if w in t)
-    if neg > pos:
-        return 'NEG'
-    elif pos > neg:
-        return 'POS'
-    else:
-        return 'NEU'
-
 def oil_signal(title, summary):
     text = f"{title} {summary}".lower()
-    # Rules first
     for pat in BEARISH_PATTERNS:
         m = re.search(pat, text)
         if m:
@@ -184,7 +178,6 @@ def oil_signal(title, summary):
         m = re.search(pat, text)
         if m:
             return ('BULLISH', f"Rule: {m.group()}")
-    # AI sentiment (HF → VADER)
     sentiment = hf_sentiment(text)
     if sentiment == 'POS':
         return ('BULLISH', 'Sentiment positive')
