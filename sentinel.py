@@ -4,12 +4,12 @@ import feedparser
 from firebase_admin import credentials, firestore, initialize_app
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
-# ---------- ENV ----------
+# ---------- ENV (all required, Twitter optional) ----------
 TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
 TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 HF_TOKEN = os.environ['HF_TOKEN']
-TWITTER_BEARER = os.environ['TWITTER_BEARER_TOKEN']
 FIREBASE_KEY_JSON = os.environ['FIREBASE_KEY_JSON']
+TWITTER_BEARER = os.environ.get('TWITTER_BEARER_TOKEN', '')   # optional, won't crash
 
 firebase_key_dict = json.loads(FIREBASE_KEY_JSON)
 cred = credentials.Certificate(firebase_key_dict)
@@ -100,6 +100,9 @@ def cleanup_old():
 
 # ---------- TWITTER ----------
 def fetch_twitter():
+    if not TWITTER_BEARER:
+        print("Twitter token missing, skipping Twitter.")
+        return []
     items = []
     now = datetime.now(timezone.utc)
     headers = {
