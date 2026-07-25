@@ -4,12 +4,11 @@ import feedparser
 from firebase_admin import credentials, firestore, initialize_app
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
-# ---------- ENV (all required, Twitter optional) ----------
+# ---------- ENV ----------
 TELEGRAM_TOKEN = os.environ['TELEGRAM_TOKEN']
 TELEGRAM_CHAT_ID = os.environ['TELEGRAM_CHAT_ID']
 HF_TOKEN = os.environ['HF_TOKEN']
 FIREBASE_KEY_JSON = os.environ['FIREBASE_KEY_JSON']
-TWITTER_BEARER = os.environ.get('TWITTER_BEARER_TOKEN', '')   # optional, won't crash
 
 firebase_key_dict = json.loads(FIREBASE_KEY_JSON)
 cred = credentials.Certificate(firebase_key_dict)
@@ -17,11 +16,6 @@ initialize_app(cred)
 db = firestore.client()
 
 # ---------- CONFIG ----------
-TWITTER_API_URL = "https://api.twitter.com/2/tweets/search/recent"
-TWITTER_QUERY = "(oil OR crude OR wti OR brent OR OPEC OR petroleum) lang:en -is:retweet"
-TWITTER_MAX_RESULTS = 10
-TWITTER_WINDOW_MIN = 60
-
 HF_MODEL_URL = "https://api-inference.huggingface.co/models/cardiffnlp/twitter-roberta-base-sentiment-latest"
 
 RSS_FEEDS = [
@@ -32,6 +26,15 @@ RSS_FEEDS = [
     'https://www.investing.com/rss/news_25.rss',
     'https://www.fxstreet.com/feeds/news/radar/energy',
     'https://www.reutersagency.com/feed/?taxonomy=best-sectors&post_type=best-sectors-energy',
+    # Reddit – instant chatter
+    'https://www.reddit.com/r/oil/.rss',
+    'https://www.reddit.com/r/energy/.rss',
+    'https://www.reddit.com/r/crudeoil/.rss',
+    'https://www.reddit.com/r/Commodities/.rss',
+    'https://www.reddit.com/r/oilandgasworkers/.rss',
+    # Fast financial news
+    'https://www.cnbc.com/id/100000000/device/rss/rss.html',
+    'https://feeds.reuters.com/reuters/businessNews',
 ]
 
 OIL_KEYWORDS = [
@@ -41,7 +44,7 @@ OIL_KEYWORDS = [
     'inventory', 'stockpile', 'production cut', 'output cut'
 ]
 
-WINDOW_MINUTES = 360
+WINDOW_MINUTES = 1440    # 24 hours – catch every relevant story
 HEARTBEAT_HOURS = 6
 
 BULLISH_PATTERNS = [
@@ -97,53 +100,6 @@ def cleanup_old():
     old_docs = db.collection('seen_news').where('created_at', '<', cutoff).limit(50).stream()
     for doc in old_docs:
         doc.reference.delete()
-
-# ---------- TWITTER ----------
-def fetch_twitter():
-    if not TWITTER_BEARER:
-        print("Twitter token missing, skipping Twitter.")
-        return []
-    items = []
-    now = datetime.now(timezone.utc)
-    headers = {
-        'Authorization': f'Bearer {TWITTER_BEARER}',
-        'User-Agent': 'v2RecentSearchPython'
-    }
-    params = {
-        'query': TWITTER_QUERY,
-        'max_results': TWITTER_MAX_RESULTS,
-        'tweet.fields': 'created_at',
-        'start_time': (now - timedelta(minutes=TWITTER_WINDOW_MIN)).isoformat(),
-    }
-    url = f"{TWITTER_API_URL}?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url, headers=headers)
-    try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            data = json.loads(resp.read())
-        print(f"Twitter results: {data.get('meta', {}).get('result_count', 0)} tweets")
-        if 'data' not in data:
-            return items
-        for tweet in data['data']:
-            text = tweet.get('text', '')
-            tweet_id = tweet.get('id', '')
-            created_at = tweet.get('created_at')
-            pub_dt = datetime.fromisoformat(created_at.replace('Z', '+00:00')) if created_at else now
-            delta = (now - pub_dt).total_seconds() / 60
-            if delta > TWITTER_WINDOW_MIN:
-                continue
-            if not is_oil_related(text):
-                continue
-            item = {
-                'id': f"tw_{tweet_id}",
-                'title': text[:100] + ('...' if len(text)>100 else ''),
-                'summary': text,
-                'link': f'https://twitter.com/i/web/status/{tweet_id}',
-            }
-            print(f"  Tweet accepted: {text[:80]}...")
-            items.append(item)
-    except Exception as e:
-        print(f"Twitter error: {e}")
-    return items
 
 # ---------- RSS ----------
 def fetch_rss():
@@ -249,7 +205,7 @@ def maybe_send_heartbeat():
 # ---------- MAIN ----------
 def main():
     print(f"\n=== RUNNING at {datetime.now(timezone.utc).isoformat()} ===")
-    items = fetch_twitter() + fetch_rss()
+    items = fetch_rss()
     print(f"Total oil candidates: {len(items)}")
     sent = 0
     for item in items:
