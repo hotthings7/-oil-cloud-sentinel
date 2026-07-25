@@ -23,5 +23,5 @@ jobs:
        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
        HF_TOKEN: ${{ secrets.HF_TOKEN }}
        FIREBASE_KEY_JSON: ${{ secrets.FIREBASE_KEY_JSON }}
-      TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}  
-         run: python sentinel.py
+       TWITTER_BEARER_TOKEN: ${{ secrets.TWITTER_BEARER_TOKEN }}  
+       run: python sentinel.py
