@@ -179,7 +179,10 @@ def compute_impact(item):
 
     return best_score, best_direction, best_category, matched_phrase
 
-def event_already_fired(event_sig):
+def event_already_fired(title, category):
+    # Create a signature from title + category (exclude time to allow updates on same event)
+    sig_text = f"{title}|{category}"
+    event_sig = hashlib.sha256(sig_text.encode()).hexdigest()
     doc_ref = db.collection('events').document(event_sig)
     doc = doc_ref.get()
     if doc.exists:
@@ -188,6 +191,7 @@ def event_already_fired(event_sig):
             last_dt = datetime.fromisoformat(last_time)
             if datetime.now(timezone.utc) - last_dt < timedelta(minutes=EVENT_MEMORY_MINUTES):
                 return True
+    # Not fired recently, or never fired: record
     doc_ref.set({'timestamp': datetime.now(timezone.utc).isoformat()})
     return False
 
@@ -224,10 +228,8 @@ def main():
         if score < MIN_IMPACT_SCORE or direction == 0:
             continue
 
-        # Signature: title + category (so different Trump statements pass)
-        sig_text = f"{item['title']}|{category}"
-        event_sig = hashlib.sha256(sig_text.encode()).hexdigest()
-        if event_already_fired(event_sig):
+        # Dedup using title + category (so two different Trump statements about same topic both pass)
+        if event_already_fired(item['title'], category):
             continue
 
         # Estimated move
@@ -247,38 +249,6 @@ def main():
                f"📰 {item['title']}\n"
                f"💡 {phrase if phrase else 'High‑confidence pattern match'}\n"
                f"🕒 {item['pub_dt'].strftime('%H:%M UTC') if item['pub_dt'] else 'now'}\n"
-               f"[Source]({item['link']})")
-
-        send_telegram(msg)
-        sent += 1
-
-    print(f"Alerts sent: {sent}")
-    maybe_send_heartbeat()
-
-if __name__ == '__main__':
-    main()
-
-        event_sig = extract_event_signature(item['title'], item['summary'], category)
-        if event_already_fired(event_sig):
-            continue
-
-        # Expected move estimate
-        if score >= 95:
-            move_est = "3–8%"
-        elif score >= 90:
-            move_est = "2–5%"
-        else:
-            move_est = "1–3%"
-
-        emoji = '🟢' if direction == 1 else '🔴'
-        dir_str = 'BULLISH' if direction == 1 else 'BEARISH'
-
-        msg = (f"🔥 *MARKET ALERT*\n"
-               f"Impact: {score}/100 | {category}\n"
-               f"Expected: {dir_str} → Estimated Move: {move_est}\n"
-               f"📰 {item['title']}\n"
-               f"💡 {phrase if phrase else 'High‑confidence pattern match'}\n"
-               f"🕒 {datetime.utcnow().strftime('%H:%M UTC')}\n"
                f"[Source]({item['link']})")
 
         send_telegram(msg)
